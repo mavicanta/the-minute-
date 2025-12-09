@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Multi-Delayed Video Stream</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            background-color: #333;
+            color: white;
+            gap: 20px; /* Reduced gap for 4 streams */
+            flex-wrap: wrap; /* Allow streams to wrap if screen is small */
+        }
+        .stream-container {
+            text-align: center;
+            background: #111;
+            padding: 10px; /* Reduced padding */
+            /* border-radius: 8px; */
+            /* box-shadow: 0 0 15px rgba(0, 0, 0, 0.5); */
+            width: calc(50% - 30px); /* Two containers per row */
+            max-width: 400px; /* Max size for each stream */
+        }
+        canvas {
+            display: block;
+            border: 2px solid #667eea;
+            margin-top: 5px;
+            background-color: #000;
+            width: 100%; /* Make canvases responsive within containers */
+            height: auto;
+        }
+        h2 {
+            font-size: 1.2em;
+            margin-bottom: 5px;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="stream-container">
+        <canvas id="canvas0" width="640" height="480"></canvas>
+    </div>
+
+    <div class="stream-container">
+        <canvas id="canvas1" width="640" height="480"></canvas>
+    </div>
+
+    <div class="stream-container">
+        <canvas id="canvas2" width="640" height="480"></canvas>
+    </div>
+
+    <div class="stream-container">
+        <canvas id="canvas3" width="640" height="480"></canvas>
+    </div>
+
+    <div class="stream-container">
+        
+        <canvas id="canvas4" width="640" height="480"></canvas>
+    </div>
+
+    <div class="stream-container">
+        
+        <canvas id="canvas5" width="640" height="480"></canvas>
+    </div>
+
+    <div class="stream-container">
+        <canvas id="canvas6" width="640" height="480"></canvas>
+    </div>
+    <div class="stream-container">
+        <canvas id="canvas7" width="640" height="480"></canvas>
+    </div>
+    <div class="stream-container">
+        <canvas id="canvas8" width="640" height="480"></canvas>
+    </div>
+
+    <script>
+        const LIVE_STREAM_URL = "http://localhost:8000/video_feed";
+        
+        // Define the target delays for each canvas (in milliseconds)
+        const DELAY_MS = [
+            0,    // canvas0: Live
+            100, // canvas1: 1 second delay
+            200, // canvas2: 2 second delay
+            300,  // canvas3: 3 second delay
+            400,  // canvas3: 3 second delay
+            500,  // canvas3: 3 second delay
+            600,  // canvas3: 3 second delay
+            700,  // canvas3: 3 second delay
+            800  // canvas3: 3 second delay
+        ];
+
+        // Retrieve all canvas elements and their contexts
+        const canvases = DELAY_MS.map((_, i) => document.getElementById(`canvas${i}`));
+        const contexts = canvases.map(canvas => canvas.getContext('2d'));
+
+        // Frame buffer for all delayed streams
+        const frameBuffer = []; 
+        let streamImg = null;
+
+        function startStream() {
+            streamImg = new Image();
+            streamImg.src = LIVE_STREAM_URL;
+
+            streamImg.onload = () => {
+                // Set canvas sizes based on the first frame's dimensions
+                canvases.forEach(canvas => {
+                    canvas.width = streamImg.width;
+                    canvas.height = streamImg.height;
+                });
+            };
+
+            streamImg.onerror = () => {
+                console.error("Error loading video stream. Check Python server console.");
+            };
+
+            // Start the two independent draw loops
+            requestAnimationFrame(drawLive);
+            // Run delayed loop at 60 FPS for smooth drawing
+            setInterval(drawDelayed, 1000 / 60); 
+        }
+
+        function drawLive() {
+            if (!streamImg || !streamImg.width) {
+                requestAnimationFrame(drawLive);
+                return;
+            }
+
+            // --- 1. Draw Live Stream (Canvas 0) ---
+            contexts[0].drawImage(streamImg, 0, 0, canvases[0].width, canvases[0].height);
+            
+            const currentTime = Date.now();
+            
+            // --- 2. Buffer Management (Add frame to buffer) ---
+            // We use a temporary canvas to copy the frame's data as a Data URL
+            const tempCanvas = document.createElement('canvas');
+            tempCanvas.width = streamImg.width;
+            tempCanvas.height = streamImg.height;
+            const tempCtx = tempCanvas.getContext('2d');
+            tempCtx.drawImage(streamImg, 0, 0);
+
+            const frameData = {
+                time: currentTime,
+                // Store the frame as an Image Data URL string
+                dataURL: tempCanvas.toDataURL('image/jpeg', 0.8) 
+            };
+            frameBuffer.push(frameData);
+            
+            // --- 3. Buffer Cleanup (Remove frames older than the longest delay) ---
+            const longestDelay = Math.max(...DELAY_MS);
+            const earliestTime = currentTime - longestDelay;
+            while (frameBuffer.length > 0 && frameBuffer[0].time < earliestTime) {
+                frameBuffer.shift(); 
+            }
+            
+            requestAnimationFrame(drawLive);
+        }
+
+
+        function drawDelayed() {
+            const currentTime = Date.now();
+
+            // Iterate over each of the delayed canvases (indices 1, 2, 3)
+            for (let i = 1; i < DELAY_MS.length; i++) {
+                const targetDelay = DELAY_MS[i];
+                const targetDelayTime = currentTime - targetDelay;
+                const currentCtx = contexts[i];
+                const currentCanvas = canvases[i];
+                
+                let targetFrame = null;
+                
+                // Loop backward to find the most recent frame that is old enough
+                for (let j = frameBuffer.length - 1; j >= 0; j--) {
+                    if (frameBuffer[j].time <= targetDelayTime) {
+                        targetFrame = frameBuffer[j];
+                        break; 
+                    }
+                }
+
+                if (targetFrame) {
+                    // Load the historical frame and draw it
+                    const delayedImage = new Image();
+                    delayedImage.onload = function() {
+                        currentCtx.drawImage(delayedImage, 0, 0, currentCanvas.width, currentCanvas.height);
+                    };
+                    delayedImage.src = targetFrame.dataURL; 
+                } else {
+                     // Display "Buffering" message during the initial phase
+                    // currentCtx.fillStyle = 'black';
+                    // currentCtx.fillRect(0, 0, currentCanvas.width, currentCanvas.height);
+                    // currentCtx.fillStyle = 'white';
+                    // currentCtx.font = '16px Arial';
+                    // currentCtx.textAlign = 'center';
+                    // currentCtx.fillText(`Buffering ${targetDelay / 1000}s...`, currentCanvas.width / 2, currentCanvas.height / 2);
+                }
+            }
+        }
+
+        startStream();
+    </script>
+</body>
+</html>
