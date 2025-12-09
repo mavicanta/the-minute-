@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Drawing Collage - Live Projection</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            overflow: hidden;
+            width: 100vw;
+            height: 100vh;
+            font-family: Arial, sans-serif;
+        }
+
+        #collage {
+            width: 100%;
+            height: 100%;
+            position: relative;
+        }
+
+        .photo {
+            position: absolute;
+            border: 5px solid white;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.4);
+            border-radius: 8px;
+            background: white;
+            padding: 10px;
+            transition: transform 0.3s;
+            animation: fadeIn 0.5s ease-in;
+            z-index: 100; /* Ensure photos are above the background but below status */
+        }
+
+        @keyframes fadeIn {
+            from {
+                opacity: 0;
+                transform: scale(0.8) rotate(0deg);
+            }
+            to {
+                opacity: 1;
+            }
+        }
+
+        .photo:hover {
+            transform: scale(1.1) !important;
+            z-index: 1000 !important; /* Bring hovered photo to front */
+        }
+
+        .photo img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            display: block;
+        }
+
+        #status {
+            position: fixed;
+            top: 20px;
+            left: 20px;
+            background: rgba(255, 255, 255, 0.95);
+            padding: 15px 25px;
+            border-radius: 50px;
+            font-weight: bold;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
+            z-index: 2000;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        #status.connected {
+            color: #10b981;
+        }
+
+        #status.disconnected {
+            color: #ef4444;
+        }
+
+        .status-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            animation: pulse 2s infinite;
+        }
+
+        .connected .status-dot {
+            background: #10b981;
+        }
+
+        .disconnected .status-dot {
+            background: #ef4444;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        #welcome {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(255, 255, 255, 0.95);
+            padding: 40px 60px;
+            border-radius: 20px;
+            text-align: center;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            z-index: 1500;
+        }
+
+        #welcome h1 {
+            color: #667eea;
+            margin-bottom: 15px;
+            font-size: 36px;
+        }
+
+        #welcome p {
+            color: #666;
+            font-size: 18px;
+            line-height: 1.6;
+        }
+
+        .hidden {
+            display: none;
+        }
+
+        #counter {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            background: rgba(255, 255, 255, 0.95);
+            padding: 15px 25px;
+            border-radius: 50px;
+            font-weight: bold;
+            color: #667eea;
+            font-size: 18px;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
+            z-index: 2000;
+        }
+    </style>
+</head>
+<body>
+    <div id="status" class="disconnected">
+        <span class="status-dot"></span>
+        <span id="status-text">Connecting...</span>
+    </div>
+
+    <div id="counter">📸 Photos: <span id="photo-count">0</span></div>
+
+    <div id="welcome">
+        <h1>🎨 Drawing Collage</h1>
+        <p>Waiting for connection...<br>Please run the Python script to start capturing!</p>
+    </div>
+
+    <div id="collage"></div>
+
+    <script>
+        const collage = document.getElementById('collage');
+        const status = document.getElementById('status');
+        const statusText = document.getElementById('status-text');
+        const welcome = document.getElementById('welcome');
+        const photoCount = document.getElementById('photo-count');
+        
+        const WS_URL = 'ws://localhost:8765';
+        const HTTP_SERVER_URL = "http://localhost:8000/"; // Used to fetch the image file
+
+        let ws;
+        let imageCount = 0;
+
+        function connect() {
+            // Attempt to connect to the WebSocket notification server
+            ws = new WebSocket(WS_URL);
+
+            ws.onopen = () => {
+                console.log('Connected to notification server!');
+                status.className = 'connected';
+                statusText.textContent = '● Connected';
+                welcome.classList.add('hidden');
+            };
+
+            ws.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    if (data.type === 'new_image_ready') {
+                        // Instead of decoding base64, we receive a filename and fetch it
+                        displayImage(data.filename);
+                        console.log('New image notification received! Fetching image...');
+                    }
+                } catch (e) {
+                    console.error("Error processing incoming WebSocket message:", e);
+                }
+            };
+
+            ws.onclose = () => {
+                console.log('Disconnected from server, retrying in 3s...');
+                status.className = 'disconnected';
+                statusText.textContent = '● Disconnected';
+                // Only retry if the connection wasn't explicitly closed by the user
+                setTimeout(connect, 3000);
+            };
+
+            ws.onerror = (error) => {
+                console.error('WebSocket error:', error);
+            };
+        }
+
+        function displayImage(filename) {
+            const photoDiv = document.createElement('div');
+            photoDiv.className = 'photo';
+            
+            // Random size between 250px and 400px
+            const size = 250 + Math.random() * 150;
+            photoDiv.style.width = size + 'px';
+            photoDiv.style.height = size + 'px';
+            
+            // Random position
+            const maxX = window.innerWidth - size - 50;
+            const maxY = window.innerHeight - size - 50;
+            photoDiv.style.left = Math.max(20, Math.random() * maxX) + 'px';
+            photoDiv.style.top = Math.max(20, Math.random() * maxY) + 'px';
+            
+            // Random rotation
+            const rotation = (Math.random() - 0.5) * 30;
+            photoDiv.style.transform = `rotate(${rotation}deg)`;
+            
+            // The image source is now the URL of the file from the HTTP server
+            // We use a timestamp parameter (?t=...) to bypass browser caching and ensure the new image loads
+            const imageUrl = `${HTTP_SERVER_URL}${filename}?t=${new Date().getTime()}`;
+            
+            photoDiv.innerHTML = `<img src="${imageUrl}" alt="Drawing">`;
+            
+            collage.appendChild(photoDiv);
+            
+            // Update counter
+            imageCount++;
+            photoCount.textContent = imageCount;
+        }
+
+        // Start connection
+        connect();
+
+        // Press F11 for fullscreen
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'F11') {
+                e.preventDefault();
+                if (!document.fullscreenElement) {
+                    document.documentElement.requestFullscreen();
+                } else {
+                    document.exitFullscreen();
+                }
+            }
+        });
+    </script>
+</body>
+</html>
