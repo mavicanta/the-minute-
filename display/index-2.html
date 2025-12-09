@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Live & Delayed Video Stream</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            background-color: #333;
+            color: white;
+            gap: 40px;
+        }
+        .stream-container {
+            text-align: center;
+            background: #111;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 0 20px rgba(0, 0, 0, 0.5);
+        }
+        canvas {
+            display: block;
+            border: 3px solid #667eea; /* Color matched to original design */
+            margin-top: 10px;
+            background-color: #000;
+        }
+        h2 {
+            margin-bottom: 0;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="stream-container">
+        <h2>🔴 Live Stream</h2>
+        <canvas id="liveCanvas" width="640" height="480"></canvas>
+    </div>
+
+    <div class="stream-container">
+        <h2>🕔 Delayed Stream (5s)</h2>
+        <canvas id="delayedCanvas" width="640" height="480"></canvas>
+    </div>
+
+    <script>
+        const LIVE_STREAM_URL = "http://localhost:8000/video_feed";
+        const DELAY_MS = 2000; // 5 seconds delay
+
+        const liveCanvas = document.getElementById('liveCanvas');
+        const delayedCanvas = document.getElementById('delayedCanvas');
+        const liveCtx = liveCanvas.getContext('2d');
+        const delayedCtx = delayedCanvas.getContext('2d');
+
+        // Frame buffer for the delayed stream
+        const frameBuffer = []; 
+        let streamImg = null;
+
+        function startStream() {
+            // Use a hidden Image element to load the M-JPEG stream frames
+            streamImg = new Image();
+            streamImg.src = LIVE_STREAM_URL;
+
+            streamImg.onload = () => {
+                // Set canvas size based on the first frame's dimensions
+                // liveCanvas.width = streamImg.width;
+                // liveCanvas.height = streamImg.height;
+                // delayedCanvas.width = streamImg.width;
+                // delayedCanvas.height = streamImg.height;
+            };
+
+            streamImg.onerror = () => {
+                console.error("Error loading video stream. Check Python server console.");
+                liveCtx.fillStyle = 'white';
+                liveCtx.font = '20px Arial';
+                liveCtx.fillText("Stream Error. Check Console.", 10, 50);
+            };
+
+            // Start the two independent draw loops
+            requestAnimationFrame(drawLive);
+            // Run delayed loop at 60 FPS for smooth drawing
+            setInterval(drawDelayed, 1000 / 60); 
+        }
+
+        function drawLive() {
+            // This function runs on every browser animation frame (usually 60 times/sec)
+            
+            if (!streamImg || !streamImg.width) {
+                // Wait until the image object has loaded the first frame
+                requestAnimationFrame(drawLive);
+                return;
+            }
+
+            // --- 1. Draw Live Stream ---
+            liveCtx.drawImage(streamImg, 0, 0, liveCanvas.width, liveCanvas.height);
+            
+            // Get the current time for the buffer
+            const currentTime = Date.now();
+            
+            // --- 2. Buffer Management (Add frame to buffer) ---
+            
+            // Create a temporary canvas to copy the frame's data without memory leak issues
+            const tempCanvas = document.createElement('canvas');
+            tempCanvas.width = streamImg.width;
+            tempCanvas.height = streamImg.height;
+            const tempCtx = tempCanvas.getContext('2d');
+            tempCtx.drawImage(streamImg, 0, 0);
+
+            const frameData = {
+                time: currentTime,
+                // Store the frame as an Image Data URL string
+                dataURL: tempCanvas.toDataURL('image/jpeg', 0.8) 
+            };
+            frameBuffer.push(frameData);
+            
+            // --- 3. Buffer Cleanup (Remove frames older than 5 seconds) ---
+            // Discard frames that are too old to prevent excessive memory build-up.
+            const earliestTime = currentTime - DELAY_MS;
+            while (frameBuffer.length > 0 && frameBuffer[0].time < earliestTime) {
+                frameBuffer.shift(); 
+            }
+            
+            requestAnimationFrame(drawLive);
+        }
+
+
+        function drawDelayed() {
+            // This function runs independently (e.g., 60 FPS) to display the history
+
+            const currentTime = Date.now();
+            const targetDelayTime = currentTime - DELAY_MS;
+
+            if (frameBuffer.length === 0) {
+                // Buffer is empty (usually during the first 5 seconds)
+                return;
+            }
+            
+            // --- Find and Draw the Target Frame ---
+            let targetFrame = null;
+            
+            // Loop backward from the newest frame to find the first one that is old enough (<= targetDelayTime).
+            for (let i = frameBuffer.length - 1; i >= 0; i--) {
+                if (frameBuffer[i].time <= targetDelayTime) {
+                    targetFrame = frameBuffer[i];
+                    break; 
+                }
+            }
+
+            if (targetFrame) {
+                // If a historical frame is found, load it into a temporary Image object for drawing
+                const delayedImage = new Image();
+                delayedImage.onload = function() {
+                    delayedCtx.drawImage(delayedImage, 0, 0, delayedCanvas.width, delayedCanvas.height);
+                };
+                // Set the source to the Data URL we saved in the buffer
+                delayedImage.src = targetFrame.dataURL; 
+            } else {
+                 // Display a "Buffering" message during the initial 5 seconds
+                // delayedCtx.fillStyle = 'black';
+                // delayedCtx.fillRect(0, 0, delayedCanvas.width, delayedCanvas.height);
+                // delayedCtx.fillStyle = 'white';
+                // delayedCtx.font = '24px Arial';
+                // delayedCtx.textAlign = 'center';
+                // delayedCtx.fillText("Buffering 5 seconds of history...", delayedCanvas.width / 2, delayedCanvas.height / 2);
+            }
+        }
+
+        startStream();
+    </script>
+</body>
+</html>
