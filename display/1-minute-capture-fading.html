@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -9,28 +10,33 @@
         * {
             box-sizing: border-box;
         }
+
         body {
             font-family: Arial, sans-serif;
-            background-color: #333; /* Dark background for ghosting effect */
+            background-color: #333;
+            /* Dark background for ghosting effect */
             color: white;
             margin: 0;
             padding: 0;
-            height: 100vh; /* Use 100% of viewport height */
-            width: 100vw;  /* Use 100% of viewport width */
-            overflow: hidden; /* CRITICAL: Hide all scrollbars */
+            height: 100vh;
+            /* Use 100% of viewport height */
+            width: 100vw;
+            /* Use 100% of viewport width */
+            overflow: hidden;
+            /* CRITICAL: Hide all scrollbars */
             /* display: flex;
             justify-content: center;
             align-items: center; */
         }
-        
+
         /* 2. Grid Container: Use CSS Grid for 7x4 layout for 28 streams */
         #stream-grid {
             display: grid;
             /* 7 columns * 4 rows = 28 streams */
-            grid-template-columns: repeat(8, 1fr); 
-            grid-template-rows: repeat(8, 1fr); 
-           /* padding: 5px; */
-           gap: 0px;
+            grid-template-columns: repeat(8, 1fr);
+            grid-template-rows: repeat(8, 1fr);
+            /* padding: 5px; */
+            gap: 0px;
 
             width: 100%;
             height: 100%;
@@ -38,19 +44,19 @@
 
         /* 3. Individual Container and Canvas Sizing */
         .stream-container {
-              display: flex;
-        justify-content: center;
-        align-items: center;
-        background: #111;
-        width: 100%;
-        height: 100%;
-        padding: 0;
-        /* padding: 1px; */
-        overflow: hidden;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            background: #111;
+            width: 100%;
+            height: 100%;
+            padding: 0;
+            /* padding: 1px; */
+            overflow: hidden;
         }
 
         canvas {
-            display: block; */
+            display: block;
             /* width: 100%; */
             height: 100%;
             background-color: #000;
@@ -65,18 +71,18 @@
         }
     </style>
 </head>
-<body>
-    
-    <div id="stream-grid"></div>
 
+<body>
+    <div id="stream-grid"></div>
+    <canvas id="recordingCanvas" style="display:none;"></canvas>
     <script>
         // =======================================================
         // ========== CONFIGURATION VARIABLES (Play here!) =======
         // =======================================================
         const NUMBER_OF_STREAMS = 64;      // Total number of streams (Canvas 0 is always Live)
-        const DELAY_INTERVAL_MS = 100;    // Time difference between each stream (e.g., 100ms)
+        const DELAY_INTERVAL_MS = 50;    // Time difference between each stream (e.g., 100ms)
         const LIVE_STREAM_URL = "http://localhost:8000/video_feed";
-        
+
         // FADING PARAMETERS
         const MAX_OPACITY = 1.0;
         const MIN_OPACITY = 0.2; // Oldest stream will be 20% visible
@@ -86,23 +92,23 @@
         // --- Calculated Values ---
         const DELAY_MS = Array.from({ length: NUMBER_OF_STREAMS }, (_, i) => i * DELAY_INTERVAL_MS);
         const longestDelay = Math.max(...DELAY_MS);
-        
+
         // --- DOM Setup ---
         const streamGrid = document.getElementById('stream-grid');
         const canvases = [];
         const contexts = [];
-        
+
         // Dynamically generate the HTML structure
         function initializeDOM() {
             DELAY_MS.forEach((delay, i) => {
                 const container = document.createElement('div');
                 container.className = 'stream-container';
-                
+
                 const canvas = document.createElement('canvas');
                 canvas.id = `canvas${i}`;
-                // canvas.width = 120; // Use small intrinsic size for performance
-                // canvas.height = 120;
-                
+                // canvas.width = canvas.clientWidth;
+                // canvas.height = canvas.clientHeight;
+
                 container.appendChild(canvas);
                 streamGrid.appendChild(container);
 
@@ -111,9 +117,69 @@
             });
         }
         initializeDOM();
-        
+
+        function resizeAllCanvases() {
+            canvases.forEach(canvas => {
+                canvas.width = canvas.clientWidth;
+                canvas.height = canvas.clientHeight;
+            });
+        }
+
+        // Wait for grid layout to settle
+        requestAnimationFrame(() => {
+            resizeAllCanvases();
+        });
+
+        let recCanvas = document.getElementById("recordingCanvas");
+        let recCtx = recCanvas.getContext("2d");
+        let recorder;
+        let recordedChunks = [];
+        let isRecording = false;
+
+        // Resize recording canvas to full screen grid size
+        function resizeRecorderCanvas() {
+            recCanvas.width = streamGrid.clientWidth;
+            recCanvas.height = streamGrid.clientHeight;
+        }
+        resizeRecorderCanvas();
+        window.addEventListener("resize", resizeRecorderCanvas);
+
+        function startRecording() {
+            if (isRecording) return;
+
+            const stream = recCanvas.captureStream(30); // 30 FPS recording
+            recorder = new MediaRecorder(stream, {
+                mimeType: "video/webm; codecs=vp9"
+            });
+
+            recorder.ondataavailable = e => recordedChunks.push(e.data);
+
+            recorder.onstop = () => {
+                const blob = new Blob(recordedChunks, { type: "video/webm" });
+                const url = URL.createObjectURL(blob);
+
+                // Trigger download
+                const a = document.createElement("a");
+                a.href = url;
+                a.download = "mosaic_recording.webm";
+                a.click();
+            };
+
+            recordedChunks = [];
+            recorder.start();
+            isRecording = true;
+            console.log("Recording started");
+        }
+
+        function stopRecording() {
+            if (!isRecording) return;
+            recorder.stop();
+            isRecording = false;
+            console.log("Recording stopped");
+        }
+
         // --- Core Logic Variables ---
-        const frameBuffer = []; 
+        const frameBuffer = [];
         let streamImg = null;
 
         function startStream() {
@@ -142,11 +208,11 @@
             }
 
             const currentTime = Date.now();
-            
+
             // --- 1. Draw Live Stream (Canvas 0) ---
-            contexts[0].globalAlpha = 1.0; 
+            contexts[0].globalAlpha = 1.0;
             contexts[0].drawImage(streamImg, 0, 0, canvases[0].width, canvases[0].height);
-            
+
             // --- 2. Buffer Management (Add frame to buffer) ---
             const tempCanvas = document.createElement('canvas');
             tempCanvas.width = streamImg.width;
@@ -157,24 +223,22 @@
             // Store the frame as a Data URL string
             const frameData = {
                 time: currentTime,
-                dataURL: tempCanvas.toDataURL('image/jpeg', 0.8) 
+                dataURL: tempCanvas.toDataURL('image/jpeg', 0.8)
             };
             frameBuffer.push(frameData);
-            
+
             // --- 3. Buffer Cleanup ---
             const earliestTime = currentTime - longestDelay;
             while (frameBuffer.length > 0 && frameBuffer[0].time < earliestTime) {
-                frameBuffer.shift(); 
+                frameBuffer.shift();
             }
-            
+
             requestAnimationFrame(drawLiveAndBuffer);
         }
 
-
-        
         function drawDelayedAndFading() {
             const currentTime = Date.now();
-            const maxDelay = longestDelay; 
+            const maxDelay = longestDelay;
 
             // Iterate over each of the delayed canvases (indices 1 up to the end)
             for (let i = 1; i < DELAY_MS.length; i++) {
@@ -182,38 +246,38 @@
                 const targetDelayTime = currentTime - targetDelay;
                 const currentCtx = contexts[i];
                 const currentCanvas = canvases[i];
-                
+
                 let targetFrame = null;
-                
+
                 // Loop backward to find the most recent frame that is old enough
                 for (let j = frameBuffer.length - 1; j >= 0; j--) {
                     if (frameBuffer[j].time <= targetDelayTime) {
                         targetFrame = frameBuffer[j];
-                        break; 
+                        break;
                     }
                 }
 
                 if (targetFrame) {
-                    
+
                     // --- Fading Calculation (Opacity decreases as delay increases) ---
-                    const normalizedDelay =  targetDelay / maxDelay;
-                    const calculatedOpacity = 0.4 * ( MAX_OPACITY - (normalizedDelay * (MAX_OPACITY - MIN_OPACITY)));
-                    
-                    currentCtx.globalAlpha = calculatedOpacity;
+                    // const normalizedDelay =  targetDelay / maxDelay;
+                    // const calculatedOpacity = ( MAX_OPACITY - (normalizedDelay * (MAX_OPACITY - MIN_OPACITY)));
+
+                    // currentCtx.globalAlpha = calculatedOpacity;
                     // ---------------------------------------------
-                    
+
                     // Load the historical frame and draw it (Asynchronous loading is slow but works)
                     const delayedImage = new Image();
-                    delayedImage.onload = function() {
+                    delayedImage.onload = function () {
                         // Clear the background to avoid artifacts when semi-transparent
-                        currentCtx.fillStyle = '#333'; 
+                        currentCtx.fillStyle = '#333';
                         currentCtx.fillRect(0, 0, currentCanvas.width, currentCanvas.height);
-                        
+
                         currentCtx.drawImage(delayedImage, 0, 0, currentCanvas.width, currentCanvas.height);
                         currentCtx.globalAlpha = 1.0; // Reset for safety
                     };
-                    delayedImage.src = targetFrame.dataURL; 
-                    
+                    delayedImage.src = targetFrame.dataURL;
+
                 } else {
                     //  // Display "Buffering" message or black background
                     // currentCtx.globalAlpha = 1.0;
@@ -223,7 +287,45 @@
             }
         }
 
+        function drawRecordingFrame() {
+            recCtx.clearRect(0, 0, recCanvas.width, recCanvas.height);
+
+            const cols = 8;
+            const rows = 8;
+
+            const cellWidth = recCanvas.width / cols;
+            const cellHeight = recCanvas.height / rows;
+
+            canvases.forEach((canvas, i) => {
+                const x = (i % cols) * cellWidth;
+                const y = Math.floor(i / cols) * cellHeight;
+
+                recCtx.drawImage(canvas, x, y, cellWidth, cellHeight);
+            });
+
+            requestAnimationFrame(drawRecordingFrame);
+        }
+
+        requestAnimationFrame(drawRecordingFrame);
+
+        // Keyboard shortcuts for recording
+        window.addEventListener("keydown", (e) => {
+            console.log(e)
+            // Start recording: Shift + R
+            if (e.key.toLowerCase() === "r") {
+                console.log("start recording")
+                startRecording();
+            }
+
+            // Stop recording: Shift + S
+            if (e.key.toLowerCase() === "s") {
+                stopRecording();
+            }
+        });
+
+
         startStream();
-    </script>
+    </script>  
 </body>
+
 </html>
