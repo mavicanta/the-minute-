@@ -3,39 +3,54 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Dynamic Multi-Delayed Video Stream</title>
+    <title>Dynamic Multi-Delayed Video Stream with Fading</title>
     <style>
+        /* 1. Base Setup: Guarantees full screen and hides scrollbars */
+        * {
+            box-sizing: border-box;
+        }
         body {
             font-family: Arial, sans-serif;
+            background-color: #333; /* Dark background for ghosting effect */
+            color: white;
+            margin: 0;
+            padding: 0;
+            height: 100vh; /* Use 100% of viewport height */
+            width: 100vw;  /* Use 100% of viewport width */
+            overflow: hidden; /* CRITICAL: Hide all scrollbars */
             display: flex;
             justify-content: center;
             align-items: center;
-            /* Adjust min-height to ensure content fits */
-            min-height: 100vh; 
-            background-color: #333;
-            color: white;
-            gap: 20px;
-            padding: 20px;
-            flex-wrap: wrap; 
         }
+        
+        /* 2. Grid Container: Use CSS Grid for 7x4 layout for 28 streams */
+        #stream-grid {
+            display: grid;
+            /* 7 columns * 4 rows = 28 streams */
+            grid-template-columns: repeat(7, 1fr); 
+            grid-template-rows: repeat(4, 1fr); 
+           /* padding: 5px; */
+        }
+
+        /* 3. Individual Container and Canvas Sizing */
         .stream-container {
-            text-align: center;
+            display: flex;
+            justify-content: center;
+            align-items: center;
             background: #111;
-            padding: 10px;
-            /* border-radius: 8px; */
-            /* Dynamically calculate width for 3 items per row, adjust gap */
-            /* width: calc(33.333% - 20px);  */
-            /* min-width: 300px; */
-            max-width: 400px;
-            margin-bottom: 10px;
+            width: 100%; 
+            height: 100%;
+            /* padding: 1px; */
+            /* overflow: hidden;  */
         }
+
         canvas {
             display: block;
-            /* border: 2px solid #667eea; */
-            margin-top: 5px;
+            width: 100%; 
+            height: 100%; 
             background-color: #000;
-            width: 100%;
-            height: auto;
+            /* border: 1px solid #667eea; */
+            object-fit: contain; /* Ensures the video maintains aspect ratio */
         }
         h2 {
             font-size: 1.2em;
@@ -45,21 +60,25 @@
 </head>
 <body>
     
-    <div id="stream-grid" style="display: flex; flex-wrap: wrap; justify-content: center; gap: 20px; width: 100%;"></div>
+    <div id="stream-grid"></div>
 
     <script>
         // =======================================================
         // ========== CONFIGURATION VARIABLES (Play here!) =======
         // =======================================================
-        const NUMBER_OF_STREAMS = 28;      // Total number of streams (Canvas 0 is always Live)
+        const NUMBER_OF_STREAMS = 60;      // Total number of streams (Canvas 0 is always Live)
         const DELAY_INTERVAL_MS = 100;    // Time difference between each stream (e.g., 100ms)
         const LIVE_STREAM_URL = "http://localhost:8000/video_feed";
+        
+        // FADING PARAMETERS
+        const MAX_OPACITY = 1.0;
+        const MIN_OPACITY = 0.2; // Oldest stream will be 20% visible
         // =======================================================
 
 
         // --- Calculated Values ---
-        // DELAY_MS: [0, 100, 200, 300, 400, ...]
         const DELAY_MS = Array.from({ length: NUMBER_OF_STREAMS }, (_, i) => i * DELAY_INTERVAL_MS);
+        const longestDelay = Math.max(...DELAY_MS);
         
         // --- DOM Setup ---
         const streamGrid = document.getElementById('stream-grid');
@@ -69,22 +88,14 @@
         // Dynamically generate the HTML structure
         function initializeDOM() {
             DELAY_MS.forEach((delay, i) => {
-                const isLive = i === 0;
                 const container = document.createElement('div');
                 container.className = 'stream-container';
                 
-                // const title = document.createElement('h2');
-                const delaySeconds = delay / 1000;
-                // title.textContent = isLive 
-                //     ? `🔴 Live Stream (0s)` 
-                //     : `🕔 Delayed Stream (${delaySeconds.toFixed(1)}s)`;
-                
                 const canvas = document.createElement('canvas');
                 canvas.id = `canvas${i}`;
-                canvas.width = 160;
+                canvas.width = 160; // Use small intrinsic size for performance
                 canvas.height = 120;
                 
-                // container.appendChild(title);
                 container.appendChild(canvas);
                 streamGrid.appendChild(container);
 
@@ -95,7 +106,6 @@
         initializeDOM();
         
         // --- Core Logic Variables ---
-        const longestDelay = Math.max(...DELAY_MS);
         const frameBuffer = []; 
         let streamImg = null;
 
@@ -104,33 +114,31 @@
             streamImg.src = LIVE_STREAM_URL;
 
             streamImg.onload = () => {
-                // Set canvas sizes based on the first frame's dimensions
-                canvases.forEach(canvas => {
-                    // canvas.width = streamImg.width;
-                    // canvas.height = streamImg.height;
-                });
+                // IMPORTANT: We do NOT set canvas sizes here; CSS handles sizing.
+                // We leave the internal canvas.width/height small for performance.
             };
 
             streamImg.onerror = () => {
                 console.error("Error loading video stream. Check Python server console.");
             };
 
-            // Start the two independent draw loops
-            requestAnimationFrame(drawLive);
-            // Run delayed loop at 60 FPS for smooth drawing
-            setInterval(drawDelayed, 1000 / 60); 
+            // Start the buffer filling loop
+            requestAnimationFrame(drawLiveAndBuffer);
+            // Start the separate drawing loop for historical frames
+            setInterval(drawDelayedAndFading, 1000 / 30); // Draw at 30 FPS
         }
 
-        function drawLive() {
+        function drawLiveAndBuffer() {
             if (!streamImg || !streamImg.width) {
-                requestAnimationFrame(drawLive);
+                requestAnimationFrame(drawLiveAndBuffer);
                 return;
             }
 
-            // --- 1. Draw Live Stream (Canvas 0) ---
-            contexts[0].drawImage(streamImg, 0, 0, canvases[0].width, canvases[0].height);
-            
             const currentTime = Date.now();
+            
+            // --- 1. Draw Live Stream (Canvas 0) ---
+            contexts[0].globalAlpha = 1.0; 
+            contexts[0].drawImage(streamImg, 0, 0, canvases[0].width, canvases[0].height);
             
             // --- 2. Buffer Management (Add frame to buffer) ---
             const tempCanvas = document.createElement('canvas');
@@ -139,24 +147,27 @@
             const tempCtx = tempCanvas.getContext('2d');
             tempCtx.drawImage(streamImg, 0, 0);
 
+            // Store the frame as a Data URL string
             const frameData = {
                 time: currentTime,
                 dataURL: tempCanvas.toDataURL('image/jpeg', 0.8) 
             };
             frameBuffer.push(frameData);
             
-            // --- 3. Buffer Cleanup (Remove frames older than the longest required delay) ---
+            // --- 3. Buffer Cleanup ---
             const earliestTime = currentTime - longestDelay;
             while (frameBuffer.length > 0 && frameBuffer[0].time < earliestTime) {
                 frameBuffer.shift(); 
             }
             
-            requestAnimationFrame(drawLive);
+            requestAnimationFrame(drawLiveAndBuffer);
         }
 
 
-        function drawDelayed() {
+        
+        function drawDelayedAndFading() {
             const currentTime = Date.now();
+            const maxDelay = longestDelay; 
 
             // Iterate over each of the delayed canvases (indices 1 up to the end)
             for (let i = 1; i < DELAY_MS.length; i++) {
@@ -176,21 +187,31 @@
                 }
 
                 if (targetFrame) {
-                    // Load the historical frame and draw it
+                    
+                    // --- Fading Calculation (Opacity decreases as delay increases) ---
+                    const normalizedDelay =  targetDelay / maxDelay;
+                    const calculatedOpacity = 0.1 * ( MAX_OPACITY - (normalizedDelay * (MAX_OPACITY - MIN_OPACITY)));
+                    
+                    currentCtx.globalAlpha = calculatedOpacity;
+                    // ---------------------------------------------
+                    
+                    // Load the historical frame and draw it (Asynchronous loading is slow but works)
                     const delayedImage = new Image();
                     delayedImage.onload = function() {
+                        // Clear the background to avoid artifacts when semi-transparent
+                        currentCtx.fillStyle = '#333'; 
+                        currentCtx.fillRect(0, 0, currentCanvas.width, currentCanvas.height);
+                        
                         currentCtx.drawImage(delayedImage, 0, 0, currentCanvas.width, currentCanvas.height);
+                        currentCtx.globalAlpha = 1.0; // Reset for safety
                     };
                     delayedImage.src = targetFrame.dataURL; 
+                    
                 } else {
-                     // Display "Buffering" message during the initial phase
-                    // const delaySeconds = targetDelay / 1000;
+                    //  // Display "Buffering" message or black background
+                    // currentCtx.globalAlpha = 1.0;
                     // currentCtx.fillStyle = 'black';
                     // currentCtx.fillRect(0, 0, currentCanvas.width, currentCanvas.height);
-                    // currentCtx.fillStyle = 'white';
-                    // currentCtx.font = '16px Arial';
-                    // currentCtx.textAlign = 'center';
-                    // currentCtx.fillText(`Buffering ${delaySeconds.toFixed(1)}s...`, currentCanvas.width / 2, currentCanvas.height / 2);
                 }
             }
         }
