@@ -80,7 +80,7 @@
         // ========== CONFIGURATION VARIABLES (Play here!) =======
         // =======================================================
         const NUMBER_OF_STREAMS = 64;      // Total number of streams (Canvas 0 is always Live)
-        const DELAY_INTERVAL_MS = 50;    // Time difference between each stream (e.g., 100ms)
+        const DELAY_INTERVAL_MS = 40;    // Time difference between each stream (e.g., 100ms)
         const LIVE_STREAM_URL = "http://localhost:8000/video_feed";
 
         // FADING PARAMETERS
@@ -118,66 +118,6 @@
         }
         initializeDOM();
 
-        function resizeAllCanvases() {
-            canvases.forEach(canvas => {
-                canvas.width = canvas.clientWidth;
-                canvas.height = canvas.clientHeight;
-            });
-        }
-
-        // Wait for grid layout to settle
-        requestAnimationFrame(() => {
-            resizeAllCanvases();
-        });
-
-        let recCanvas = document.getElementById("recordingCanvas");
-        let recCtx = recCanvas.getContext("2d");
-        let recorder;
-        let recordedChunks = [];
-        let isRecording = false;
-
-        // Resize recording canvas to full screen grid size
-        function resizeRecorderCanvas() {
-            recCanvas.width = streamGrid.clientWidth;
-            recCanvas.height = streamGrid.clientHeight;
-        }
-        resizeRecorderCanvas();
-        window.addEventListener("resize", resizeRecorderCanvas);
-
-        function startRecording() {
-            if (isRecording) return;
-
-            const stream = recCanvas.captureStream(30); // 30 FPS recording
-            recorder = new MediaRecorder(stream, {
-                mimeType: "video/webm; codecs=vp9"
-            });
-
-            recorder.ondataavailable = e => recordedChunks.push(e.data);
-
-            recorder.onstop = () => {
-                const blob = new Blob(recordedChunks, { type: "video/webm" });
-                const url = URL.createObjectURL(blob);
-
-                // Trigger download
-                const a = document.createElement("a");
-                a.href = url;
-                a.download = "mosaic_recording.webm";
-                a.click();
-            };
-
-            recordedChunks = [];
-            recorder.start();
-            isRecording = true;
-            console.log("Recording started");
-        }
-
-        function stopRecording() {
-            if (!isRecording) return;
-            recorder.stop();
-            isRecording = false;
-            console.log("Recording stopped");
-        }
-
         // --- Core Logic Variables ---
         const frameBuffer = [];
         let streamImg = null;
@@ -214,25 +154,25 @@
             contexts[0].drawImage(streamImg, 0, 0, canvases[0].width, canvases[0].height);
 
             // --- 2. Buffer Management (Add frame to buffer) ---
-            const tempCanvas = document.createElement('canvas');
-            tempCanvas.width = streamImg.width;
-            tempCanvas.height = streamImg.height;
+            const tempCanvas = new OffscreenCanvas(streamImg.width, streamImg.height);
             const tempCtx = tempCanvas.getContext('2d');
             tempCtx.drawImage(streamImg, 0, 0);
 
-            // Store the frame as a Data URL string
-            const frameData = {
-                time: currentTime,
-                dataURL: tempCanvas.toDataURL('image/jpeg', 0.8)
-            };
-            frameBuffer.push(frameData);
+            // Convert to Bitmap asynchronously (MUCH faster & high quality)
+            createImageBitmap(tempCanvas).then(bitmap => {
 
-            // --- 3. Buffer Cleanup ---
-            const earliestTime = currentTime - longestDelay;
-            while (frameBuffer.length > 0 && frameBuffer[0].time < earliestTime) {
-                frameBuffer.shift();
-            }
+                frameBuffer.push({
+                    time: currentTime,
+                    bitmap: bitmap
+                });
 
+                // Cleanup old frames
+                const earliestTime = currentTime - longestDelay;
+                while (frameBuffer.length > 0 && frameBuffer[0].time < earliestTime) {
+                    frameBuffer.shift();
+                }
+
+            });
             requestAnimationFrame(drawLiveAndBuffer);
         }
 
@@ -261,52 +201,34 @@
 
                     // --- Fading Calculation (Opacity decreases as delay increases) ---
                     // const normalizedDelay =  targetDelay / maxDelay;
-                    // const calculatedOpacity = ( MAX_OPACITY - (normalizedDelay * (MAX_OPACITY - MIN_OPACITY)));
+                    // const calculatedOpacity = 0.3 * ( MAX_OPACITY - (normalizedDelay * (MAX_OPACITY - MIN_OPACITY)));
 
                     // currentCtx.globalAlpha = calculatedOpacity;
                     // ---------------------------------------------
 
                     // Load the historical frame and draw it (Asynchronous loading is slow but works)
-                    const delayedImage = new Image();
-                    delayedImage.onload = function () {
-                        // Clear the background to avoid artifacts when semi-transparent
-                        currentCtx.fillStyle = '#333';
-                        currentCtx.fillRect(0, 0, currentCanvas.width, currentCanvas.height);
+                    // const delayedImage = new Image();
+                    // delayedImage.onload = function () {
+                    //     // Clear the background to avoid artifacts when semi-transparent
+                    //     // currentCtx.fillStyle = '#333';
+                    //     currentCtx.fillRect(0, 0, currentCanvas.width, currentCanvas.height);
 
-                        currentCtx.drawImage(delayedImage, 0, 0, currentCanvas.width, currentCanvas.height);
-                        currentCtx.globalAlpha = 1.0; // Reset for safety
-                    };
-                    delayedImage.src = targetFrame.dataURL;
+                    //     currentCtx.drawImage(delayedImage, 0, 0, currentCanvas.width, currentCanvas.height);
+                    //     currentCtx.globalAlpha = 1.0; // Reset for safety
+                    // };
+                    // delayedImage.src = targetFrame.dataURL;
 
-                } else {
-                    //  // Display "Buffering" message or black background
-                    // currentCtx.globalAlpha = 1.0;
-                    // currentCtx.fillStyle = 'black';
-                    // currentCtx.fillRect(0, 0, currentCanvas.width, currentCanvas.height);
+
+                    currentCtx.drawImage(
+                        targetFrame.bitmap,
+                        0, 0,
+                        currentCanvas.width,
+                        currentCanvas.height
+                    );
+
                 }
             }
         }
-
-        function drawRecordingFrame() {
-            recCtx.clearRect(0, 0, recCanvas.width, recCanvas.height);
-
-            const cols = 8;
-            const rows = 8;
-
-            const cellWidth = recCanvas.width / cols;
-            const cellHeight = recCanvas.height / rows;
-
-            canvases.forEach((canvas, i) => {
-                const x = (i % cols) * cellWidth;
-                const y = Math.floor(i / cols) * cellHeight;
-
-                recCtx.drawImage(canvas, x, y, cellWidth, cellHeight);
-            });
-
-            requestAnimationFrame(drawRecordingFrame);
-        }
-
-        requestAnimationFrame(drawRecordingFrame);
 
         // Keyboard shortcuts for recording
         window.addEventListener("keydown", (e) => {
@@ -325,7 +247,7 @@
 
 
         startStream();
-    </script>  
+    </script>
 </body>
 
 </html>

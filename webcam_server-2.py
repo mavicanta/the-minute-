@@ -41,7 +41,7 @@ class CustomRequestHandler(SimpleHTTPRequestHandler):
                     break
 
                 # Encode frame to JPEG format
-                ret, buffer = cv2.imencode('.jpg', frame)
+                ret, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 95])
                 if not ret: continue
 
                 # Send M-JPEG stream boundary and headers
