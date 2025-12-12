@@ -1,0 +1,423 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Dynamic Multi-Delayed Video Stream with Fading</title>
+ <style>
+    /* 1. Base Setup: Guarantees full screen and hides scrollbars */
+    * {
+        box-sizing: border-box;
+    }
+
+    body {
+        font-family: Arial, sans-serif;
+        background-color: #333; /* Primary Background */
+        color: white;
+        margin: 0;
+        padding: 0;
+        height: 100vh;
+        width: 100vw;
+        overflow: hidden;
+    }
+
+    /* 2. Grid Container: 8x8 layout */
+    #stream-grid {
+        display: grid;
+        grid-template-columns: repeat(8, 1fr);
+        grid-template-rows: repeat(8, 1fr);
+        gap: 0;
+        width: 100%;
+        height: 100%;
+    }
+
+    /* 3. Individual Container and Canvas Sizing */
+    .stream-container {
+        /* display: flex; */
+        justify-content: center;
+        align-items: center;
+        /* CRITICAL CHANGE: Match body background to hide gaps */
+        background: #333; 
+        width: 100%;
+        height: 100%;
+        padding: 0;
+        overflow: hidden;
+    }
+
+    canvas {
+        display: block;
+        /* CRITICAL CHANGE: Match body background to hide object-fit gaps */
+        /* background-color: #333;  */
+        width: 100%; 
+        height: 100%;
+        border: none;
+        object-fit: contain;
+    }
+
+    /* The master canvas must be hidden but correctly sized */
+    #masterCanvas {
+        display: none;
+    }
+</style>
+</head>
+
+<body>
+  <div id="stream-grid"></div>
+  <canvas id="masterCanvas"></canvas>
+
+  <div id="recording-status"
+    style="position: fixed; top: 10px; right: 10px; padding: 5px 10px; background: rgba(0,0,0,0.7); color: white; border-radius: 5px; font-size: 14px; z-index: 1000; display: none;">
+    🔴
+  </div>
+
+  <script>
+    // =======================================================
+    // ========== CONFIGURATION VARIABLES (Play here!) =======
+    // =======================================================
+    const NUMBER_OF_STREAMS = 64;
+    const GRID_COLS = 8;
+    const GRID_ROWS = 8;
+    const DELAY_INTERVAL_MS = 40;
+    const LIVE_STREAM_URL = "http://localhost:8000/video_feed";
+
+    // FADING PARAMETERS
+    const MAX_OPACITY = 1.0;
+    const MIN_OPACITY = 0.2;
+
+    // ADDED: A small buffer tolerance to prevent the oldest frame from being deleted too soon.
+    const BUFFER_TOLERANCE_MS = 500;
+    // =======================================================
+    const RECORDING_START_DELAY_MS = 100;
+
+    // --- Calculated Values ---
+    const DELAY_MS = Array.from({ length: NUMBER_OF_STREAMS }, (_, i) => i * DELAY_INTERVAL_MS);
+    const longestDelay = Math.max(...DELAY_MS);
+
+    // --- DOM Setup ---
+    const streamGrid = document.getElementById('stream-grid');
+    const masterCanvas = document.getElementById('masterCanvas');
+    const masterCtx = masterCanvas.getContext('2d');
+    const canvases = [];
+    const contexts = [];
+    const recordingStatus = document.getElementById('recording-status');
+
+    // --- Recording Variables ---
+    let mediaRecorder;
+    const recordedChunks = [];
+    let isRecording = false;
+
+
+    // ... (omitting configuration and DOM setup which remain the same) ...
+
+    // --- Canvas Dimensions (Calculated based on screen size) ---
+    let canvasWidth = 0;
+    let canvasHeight = 0;
+
+
+    // Dynamically generate the HTML structure
+    function initializeDOM() {
+      DELAY_MS.forEach((delay, i) => {
+        const container = document.createElement('div');
+        container.className = 'stream-container';
+
+        const canvas = document.createElement('canvas');
+        canvas.id = `canvas${i}`;
+        container.appendChild(canvas);
+        streamGrid.appendChild(container);
+
+        canvases.push(canvas);
+        contexts.push(canvas.getContext('2d'));
+      });
+
+      // Calculate sizes immediately based on grid's final layout dimensions
+      const calculateSizes = () => {
+        const gridRect = streamGrid.getBoundingClientRect();
+
+        // CRITICAL: Ensure dimensions are floored to prevent sub-pixel issues.
+        canvasWidth = Math.floor(gridRect.width / GRID_COLS);
+        canvasHeight = Math.floor(gridRect.height / GRID_ROWS);
+
+        // // Set all individual canvas intrinsic sizes
+        canvases.forEach(canvas => {
+          canvas.width = canvasWidth;
+          canvas.height = canvasHeight;
+        });
+
+        // Set the master canvas size to the total grid size
+        masterCanvas.width = canvasWidth * GRID_COLS;
+        masterCanvas.height = canvasHeight * GRID_ROWS;
+
+        console.log(`Individual Canvas size: ${canvasWidth}x${canvasHeight}`);
+        console.log(`Master Canvas size: ${masterCanvas.width}x${masterCanvas.height}`);
+      };
+
+      // Call once initially and then on window resize
+      calculateSizes();
+      window.addEventListener('resize', calculateSizes);
+    }
+
+    document.addEventListener('DOMContentLoaded', initializeDOM);
+
+    // --- Core Logic Variables ---
+    const frameBuffer = [];
+    let streamImg = null;
+
+    function startStream() {
+      streamImg = new Image();
+      streamImg.src = LIVE_STREAM_URL;
+
+      streamImg.onload = () => {
+        // CRITICAL FIX: Only start the drawing loops *after* the image is loaded.
+        console.log("Live stream image loaded. Starting drawing loops...");
+        requestAnimationFrame(drawLiveAndBuffer);
+        setInterval(drawDelayedAndFading, 1000 / 30); // Draw at 30 FPS
+      };
+
+      streamImg.onerror = () => {
+        console.error("Error loading video stream. Check Python server console.");
+      };
+    }
+
+    function drawLiveAndBuffer() {
+      // NOTE: We no longer need the !streamImg.width check here because of the onload gate in startStream().
+      if (canvasWidth === 0) {
+        requestAnimationFrame(drawLiveAndBuffer);
+        return;
+      }
+
+      const currentTime = Date.now();
+
+      // --- 1. Draw Live Stream (Canvas 0) ---
+      // This is guaranteed to draw a valid frame because streamImg is loaded.
+      contexts[0].globalAlpha = 1.0;
+      contexts[0].drawImage(streamImg, 0, 0, canvasWidth, canvasHeight);
+
+      // --- 2. Buffer Management (Add frame to buffer as ImageBitmap) ---
+      const tempCanvas = streamImg.width > 0 ? (new OffscreenCanvas(streamImg.width, streamImg.height)) : document.createElement('canvas');
+      if (tempCanvas.width === 0) {
+        tempCanvas.width = streamImg.width;
+        tempCanvas.height = streamImg.height;
+      }
+      const tempCtx = tempCanvas.getContext('2d');
+      tempCtx.drawImage(streamImg, 0, 0);
+
+      createImageBitmap(tempCanvas).then(bitmap => {
+        frameBuffer.push({
+          time: currentTime,
+          bitmap: bitmap
+        });
+
+        // Cleanup old frames
+        const earliestTime = currentTime - longestDelay - BUFFER_TOLERANCE_MS;
+        while (frameBuffer.length > 0 && frameBuffer[0].time < earliestTime) {
+          frameBuffer.shift();
+        }
+      }).catch(e => {
+        // console.error("Error creating ImageBitmap:", e);
+      });
+      requestAnimationFrame(drawLiveAndBuffer);
+    }
+
+    function startStream() {
+      streamImg = new Image();
+      streamImg.src = LIVE_STREAM_URL;
+
+      streamImg.onerror = () => {
+        console.error("Error loading video stream. Check Python server console.");
+      };
+
+      requestAnimationFrame(drawLiveAndBuffer);
+      setInterval(drawDelayedAndFading, 1000 / 30); // Draw at 30 FPS
+    }
+
+   function drawDelayedAndFading() {
+            if (canvasWidth === 0) return; // Wait for sizing
+
+            const currentTime = Date.now();
+            const maxDelay = longestDelay;
+            
+            // Clear the master canvas before drawing the new frame
+            masterCtx.clearRect(0, 0, masterCanvas.width, masterCanvas.height);
+
+
+            // Iterate over ALL canvases (index 0 is live, 1+ are delayed)
+            for (let i = 0; i < DELAY_MS.length; i++) {
+                const targetDelay = DELAY_MS[i];
+                const currentCtx = contexts[i];
+                const currentCanvas = canvases[i];
+                
+                let targetFrame = null;
+                
+                // Find Target Frame for delayed streams
+                if (i > 0) {
+                    const targetDelayTime = currentTime - targetDelay;
+                     for (let j = frameBuffer.length - 1; j >= 0; j--) {
+                        if (frameBuffer[j].time <= targetDelayTime) {
+                            targetFrame = frameBuffer[j];
+                            break;
+                        }
+                    }
+                }
+                
+                // Determine the source for the draw call (live canvas content is the source for i=0)
+                let frameSource = (i === 0) ? currentCanvas : (targetFrame ? targetFrame.bitmap : null);
+                
+                // --- CRITICAL FIX: Manually clear the canvas to the desired background color ---
+                currentCtx.globalAlpha = 1.0; 
+                // currentCtx.fillStyle = '#333'; // Match body background color
+                currentCtx.fillRect(0, 0, canvasWidth, canvasHeight); 
+                // -----------------------------------------------------------------------------
+                
+                // Draw individual canvas and copy to master
+                if (frameSource) {
+                    
+                    // --- Fading Calculation ---
+                    // const calculatedOpacity = (i === 0) ? 1.0 : (MAX_OPACITY - (targetDelay / maxDelay) * (MAX_OPACITY - MIN_OPACITY));
+                    // currentCtx.globalAlpha = calculatedOpacity;
+                    // currentCtx.imageSmoothingEnabled = false;
+
+                    // Draw the frame source onto the individual canvas
+                    if (i > 0) { 
+                        // For delayed frames (ImageBitmap)
+                        currentCtx.drawImage(
+                            frameSource,
+                            0, 0, frameSource.width, frameSource.height, 
+                            0, 0, canvasWidth, canvasHeight 
+                        );
+                    } else {
+                        // For the live stream (i=0), the image was already drawn in drawLiveAndBuffer
+                        // We do NOT need to redraw the image source here, as its content is already on currentCanvas.
+                        // We only need to ensure the Master Canvas gets the faded version.
+                        
+                        // NOTE: Because the live stream is drawn outside this loop, 
+                        // and we cleared the canvas above, we must redraw the live content
+                        // with the correct alpha, even if alpha is 1.0.
+                        currentCtx.drawImage(
+                            streamImg, 
+                            0, 0, streamImg.width, streamImg.height, 
+                            0, 0, canvasWidth, canvasHeight
+                        );
+                    }
+                    
+                    currentCtx.globalAlpha = 1.0; // Reset alpha on individual canvas
+
+                    // --- DRAW TO MASTER CANVAS ---
+                    const col = i % GRID_COLS;
+                    const row = Math.floor(i / GRID_COLS);
+                    const drawX = col * canvasWidth;
+                    const drawY = row * canvasHeight;
+
+                    // Copy the content of the individual (already drawn and faded) canvas to the master canvas
+                    masterCtx.drawImage(
+                        currentCanvas,
+                        drawX, drawY,
+                        canvasWidth, canvasHeight
+                    );
+                }
+                // If frameSource is null, the clear at the start of the loop has already made it the desired color.
+            }
+        }
+
+    // =======================================================
+    // ========== RECORDING LOGIC (Unchanged) ================
+    // =======================================================
+    function startRecording() {
+      if (isRecording) {
+        console.warn("Recording is already in progress.");
+        return;
+      }
+      if (masterCanvas.width === 0 || masterCanvas.height === 0) {
+        console.error("Master canvas is not sized yet. Cannot start recording.");
+        return;
+      }
+
+      // --- 1. Create MediaStream from the MASTER CANVAS ---
+      const stream = masterCanvas.captureStream(30);
+
+      recordedChunks.length = 0;
+      mediaRecorder = new MediaRecorder(stream, {
+        mimeType: 'video/webm; codecs=vp9'
+      });
+
+      mediaRecorder.ondataavailable = function (e) {
+        if (e.data.size > 0) {
+          recordedChunks.push(e.data);
+        }
+      };
+
+      mediaRecorder.onstop = function () {
+        isRecording = false;
+        recordingStatus.style.display = 'none';
+        downloadRecording();
+      };
+
+      // --- 2. Start MediaRecorder IMMEDIATELY (to initialize) ---
+      mediaRecorder.start();
+
+      // --- 3. Introduce a DELAY before recording actual chunks ---
+      // This is the critical change to fix the black first frame.
+      setTimeout(() => {
+        if (mediaRecorder.state === 'recording') {
+          // Start recording chunks to fix the initial black frame issue
+          // (This doesn't stop the media stream, but the recording of chunks)
+          // mediaRecorder.requestData() could also be used here if needed
+        }
+      }, RECORDING_START_DELAY_MS);
+
+
+      isRecording = true;
+      recordingStatus.style.display = 'block';
+      console.log("Full grid recording started. Waiting for first frame...");
+    }
+
+    function stopRecording() {
+      if (!isRecording || mediaRecorder.state === 'inactive') {
+        console.warn("No recording is currently active.");
+        return;
+      }
+      mediaRecorder.stop();
+      console.log("Recording stopped. Preparing download...");
+    }
+
+    function downloadRecording() {
+      if (recordedChunks.length === 0) {
+        console.error("No video data was recorded.");
+        return;
+      }
+
+      const blob = new Blob(recordedChunks, {
+        type: 'video/webm'
+      });
+
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      document.body.appendChild(a);
+      a.style.display = 'none';
+      a.href = url;
+      a.download = `full_delayed_grid_${new Date().toISOString()}.webm`;
+      a.click();
+
+      window.URL.revokeObjectURL(url);
+      document.body.removeChild(a);
+      console.log("Video downloaded successfully.");
+    }
+
+
+    // Keyboard shortcuts for recording
+    window.addEventListener("keydown", (e) => {
+      if (e.key.toLowerCase() === "r" && !isRecording) {
+        startRecording();
+      }
+
+      if (e.key.toLowerCase() === "s" && isRecording) {
+        stopRecording();
+      }
+    });
+
+
+    startStream();
+  </script>
+</body>
+
+</html>

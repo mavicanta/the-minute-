@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Multi-Canvas Playback & Overdub</title>
+    <style>
+        body,
+        html {
+            margin: 0;
+            padding: 0;
+            height: 100%;
+            width: 100%;
+            background: #333;
+            overflow: hidden;
+        }
+
+        #stream-grid {
+            display: grid;
+            grid-template-columns: repeat(8, 1fr);
+            grid-template-rows: repeat(8, 1fr);
+            width: 100%;
+            height: 100%;
+        }
+
+        .stream-container {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            background: #111;
+            overflow: hidden;
+        }
+
+        canvas {
+            height: 100%;
+            width: 100%;
+            display: block;
+            object-fit: contain;
+            background: #000;
+        }
+    </style>
+</head>
+
+<body>
+    <div id="stream-grid"></div>
+
+    <script>
+        const NUMBER_OF_STREAMS = 64;
+        const DELAY_INTERVAL_MS = 100;
+        const LIVE_STREAM_URL = "http://localhost:8000/video_feed";
+
+        const DELAY_MS = Array.from({ length: NUMBER_OF_STREAMS }, (_, i) => i * DELAY_INTERVAL_MS);
+        const longestDelay = Math.max(...DELAY_MS);
+
+        // --- DOM Setup ---
+        const streamGrid = document.getElementById('stream-grid');
+        const canvases = [];
+        const contexts = [];
+
+        function initializeDOM() {
+            DELAY_MS.forEach((_, i) => {
+                const container = document.createElement('div');
+                container.className = 'stream-container';
+
+                const canvas = document.createElement('canvas');
+                container.appendChild(canvas);
+
+                streamGrid.appendChild(container);
+                canvases.push(canvas);
+                contexts.push(canvas.getContext('2d'));
+            });
+        }
+        initializeDOM();
+
+        function resizeAllCanvases() {
+            canvases.forEach(c => {
+                c.width = c.clientWidth;
+                c.height = c.clientHeight;
+            });
+        }
+        resizeAllCanvases();
+        window.addEventListener('resize', resizeAllCanvases);
+
+        // --- Core Stream Logic ---
+        const frameBuffer = [];
+        let streamImg = null;
+
+        function startStream() {
+            streamImg = new Image();
+            streamImg.src = LIVE_STREAM_URL;
+
+            streamImg.onload = () => { };
+            streamImg.onerror = () => console.error("Error loading video stream.");
+
+            requestAnimationFrame(drawLiveAndBuffer);
+            setInterval(drawDelayedAndFading, 1000 / 30);
+        }
+
+        function drawLiveAndBuffer() {
+            if (!streamImg || !streamImg.width) { requestAnimationFrame(drawLiveAndBuffer); return; }
+
+            const currentTime = Date.now();
+
+            // Draw live stream on first canvas
+            contexts[0].globalAlpha = 1.0;
+            contexts[0].drawImage(streamImg, 0, 0, canvases[0].width, canvases[0].height);
+
+            // Buffer
+            const tempCanvas = document.createElement('canvas');
+            tempCanvas.width = streamImg.width;
+            tempCanvas.height = streamImg.height;
+            const tempCtx = tempCanvas.getContext('2d');
+            tempCtx.drawImage(streamImg, 0, 0);
+
+            frameBuffer.push({ time: currentTime, dataURL: tempCanvas.toDataURL('image/jpeg', 0.8) });
+
+            // --- Capture into master recording only when isRecording is true ---
+            if (isRecording) {
+                const frameData = canvases.map(c => c.toDataURL());
+                playbackFrames.push(frameData);
+            }
+
+            // Cleanup old frames
+            const earliestTime = currentTime - longestDelay;
+            while (frameBuffer.length > 0 && frameBuffer[0].time < earliestTime) frameBuffer.shift();
+
+            requestAnimationFrame(drawLiveAndBuffer);
+        }
+
+        function drawDelayedAndFading() {
+            const currentTime = Date.now();
+            const maxDelay = longestDelay;
+
+            for (let i = 1; i < DELAY_MS.length; i++) {
+                const targetDelay = DELAY_MS[i];
+                const targetTime = currentTime - targetDelay;
+                const ctx = contexts[i];
+                const canvas = canvases[i];
+
+                let frame = null;
+                for (let j = frameBuffer.length - 1; j >= 0; j--) {
+                    if (frameBuffer[j].time <= targetTime) { frame = frameBuffer[j]; break; }
+                }
+
+                if (frame) {
+                    const img = new Image();
+                    img.onload = function () {
+                        ctx.fillStyle = '#333';
+                        ctx.fillRect(0, 0, canvas.width, canvas.height);
+                        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+                        ctx.globalAlpha = 1.0;
+                    };
+                    img.src = frame.dataURL;
+                }
+            }
+        }
+
+        startStream();
+
+        // --- Playback & Overdub System ---
+        const playbackFrames = [];  // previously recorded session
+        const overdubFrames = [];   // new frames during overdub
+        let isPlaying = false;
+        let isOverdubbing = false;
+
+        function captureMasterFrame() {
+            // Capture current canvases
+            const frameData = canvases.map(c => c.toDataURL());
+            playbackFrames.push(frameData);
+        }
+
+        // Capture at ~30 FPS
+        // const captureInterval = setInterval(captureMasterFrame, 33); // 33ms ≈ 30 FPS
+
+        function captureFrame(targetArray) {
+            const frameData = canvases.map(c => c.toDataURL());
+            targetArray.push(frameData);
+        }
+
+        function playFramesAtFPS(frames, fps = 30) {
+            if (frames.length === 0) return;
+
+            const interval = 1000 / fps; // time per frame in ms
+            let index = 0;
+            let lastTime = performance.now();
+
+            function loop(now) {
+                if (now - lastTime >= interval) {
+                    const frame = frames[index];
+
+                    frame.forEach((img, i) => {
+                        const ctx = contexts[i];
+                        ctx.clearRect(0, 0, canvases[i].width, canvases[i].height);
+                        ctx.drawImage(img, 0, 0, canvases[i].width, canvases[i].height);
+                    });
+
+                    index = (index + 1) % frames.length; // loop
+                    lastTime = now;
+                }
+
+                requestAnimationFrame(loop);
+            }
+
+            requestAnimationFrame(loop);
+        }
+
+
+        function playFrames(frames, onFrame) {
+            let index = 0;
+            const interval = 1000 / 30; // e.g., 33ms for 30 FPS
+            function loop() {
+                if (index >= frames.length) { isPlaying = false; return; }
+
+                const frame = frames[index];
+                if (Array.isArray(frame)) {
+                    frame.forEach((dataURL, i) => {
+                        const img = new Image();
+                        img.onload = () => {
+                            const ctx = contexts[i];
+                            ctx.clearRect(0, 0, canvases[i].width, canvases[i].height);
+                            ctx.drawImage(img, 0, 0, canvases[i].width, canvases[i].height);
+                        };
+                        img.src = dataURL;
+                    });
+                }
+
+                if (onFrame) onFrame(index);
+
+                index++;
+                requestAnimationFrame(loop);
+                // setTimeout(loop, interval);
+            }
+            isPlaying = true;
+            loop();
+        }
+
+        function startOverdub() {
+
+            console.log("playbackFrames.length", playbackFrames.length);
+            if (playbackFrames.length === 0) return;
+            isOverdubbing = true;
+
+            let index = 0;
+            function loop() {
+                console.log("loopp")
+                if (index >= playbackFrames.length) {
+                    isOverdubbing = false;
+                    return;
+                }
+
+                const frame = playbackFrames[index];
+
+                // --- Synchronously draw playback frame ---
+                frame.forEach((dataURL, i) => {
+                    const img = new Image();
+                    img.src = dataURL;
+                    // Draw synchronously using a small trick: draw after image loads immediately
+                    img.onload = () => {
+                        contexts[i].clearRect(0, 0, canvases[i].width, canvases[i].height);
+                        contexts[i].drawImage(img, 0, 0, canvases[i].width, canvases[i].height);
+
+                        // --- Draw latest live frame from buffer on top ---
+                        if (frameBuffer.length > 0) {
+                            const liveDataURL = frameBuffer[frameBuffer.length - 1].dataURL;
+                            const liveImg = new Image();
+                            liveImg.src = liveDataURL;
+                            liveImg.onload = () => {
+                                contexts[i].drawImage(liveImg, 0, 0, canvases[i].width, canvases[i].height);
+                                // Capture combined frame
+                                captureFrame(overdubFrames);
+                            };
+                        } else {
+                            // If no live frame yet, just capture playback frame
+                            captureFrame(overdubFrames);
+                        }
+                    };
+                });
+
+                index++;
+                requestAnimationFrame(loop);
+            }
+
+            loop();
+        }
+
+
+        let isRecording = false;  // Master recording state
+        // Keyboard shortcuts
+        window.addEventListener("keydown", (e) => {
+            if (e.shiftKey && e.key.toLowerCase() === "p") { // Shift+P playback
+                console.log("playback")
+                playFrames(playbackFrames);
+            }
+            if (e.shiftKey && e.key.toLowerCase() === "r") { // Shift+R overdub
+                console.log("overdub")
+                startOverdub();
+            }
+            if (e.key.toLowerCase() === "s") {
+                isRecording = !isRecording;
+                console.log(isRecording ? "Recording started" : "Recording stopped");
+            }
+        });
+
+    </script>
+</body>
+
+</html>

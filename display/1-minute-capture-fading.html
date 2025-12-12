@@ -74,7 +74,11 @@
 
 <body>
     <div id="stream-grid"></div>
-    <canvas id="recordingCanvas" style="display:none;"></canvas>
+    <canvas id="masterCanvas"></canvas>
+    <div id="recording-status"
+        style="position: fixed; top: 10px; right: 10px; padding: 5px 10px; background: rgba(0,0,0,0.7); color: white; border-radius: 5px; font-size: 14px; z-index: 1000; display: none;">
+        🔴 Recording... (Press S to stop)
+    </div>
     <script>
         // =======================================================
         // ========== CONFIGURATION VARIABLES (Play here!) =======
@@ -95,8 +99,16 @@
 
         // --- DOM Setup ---
         const streamGrid = document.getElementById('stream-grid');
+        const masterCanvas = document.getElementById('masterCanvas'); // GET MASTER
+        const masterCtx = masterCanvas.getContext('2d');
         const canvases = [];
         const contexts = [];
+        const recordingStatus = document.getElementById('recording-status');
+
+        // --- Recording Variables ---
+        let mediaRecorder;
+        const recordedChunks = [];
+        let isRecording = false;
 
         // Dynamically generate the HTML structure
         function initializeDOM() {
@@ -114,7 +126,7 @@
 
                 canvases.push(canvas);
                 contexts.push(canvas.getContext('2d'));
-            });
+            });    
         }
         initializeDOM();
 
@@ -230,23 +242,103 @@
             }
         }
 
+        // =======================================================
+        // ========== RECORDING LOGIC ============================
+        // =======================================================
+
+        function startRecording() {
+            if (isRecording) {
+                console.warn("Recording is already in progress.");
+                return;
+            }
+
+            // --- 1. Create MediaStream from the Live Canvas (canvas 0) ---
+            const targetCanvas = canvases[0];
+            if (!targetCanvas) {
+                console.error("Target canvas (Live Stream) not found.");
+                return;
+            }
+
+            // Capture the content of the Live Canvas as a video stream
+            const stream = targetCanvas.captureStream(30); // 30 FPS capture rate
+
+            // --- 2. Initialize MediaRecorder ---
+            recordedChunks.length = 0; // Clear previous recordings
+            mediaRecorder = new MediaRecorder(stream, {
+                mimeType: 'video/webm; codecs=vp9' // High quality format
+            });
+
+            // --- 3. Event Handlers ---
+            mediaRecorder.ondataavailable = function (e) {
+                if (e.data.size > 0) {
+                    recordedChunks.push(e.data);
+                }
+            };
+
+            mediaRecorder.onstop = function () {
+                isRecording = false;
+                recordingStatus.style.display = 'none';
+                downloadRecording();
+            };
+
+            // --- 4. Start Recording ---
+            mediaRecorder.start();
+            isRecording = true;
+            recordingStatus.style.display = 'block';
+            console.log("Recording started...");
+        }
+
+        function stopRecording() {
+            if (!isRecording || mediaRecorder.state === 'inactive') {
+                console.warn("No recording is currently active.");
+                return;
+            }
+            mediaRecorder.stop();
+            console.log("Recording stopped. Preparing download...");
+        }
+
+        function downloadRecording() {
+            if (recordedChunks.length === 0) {
+                console.error("No video data was recorded.");
+                return;
+            }
+
+            // Combine all recorded chunks into a single Blob
+            const blob = new Blob(recordedChunks, {
+                type: 'video/webm'
+            });
+
+            // Create a downloadable link
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            document.body.appendChild(a);
+            a.style.display = 'none';
+            a.href = url;
+            a.download = `multi_delayed_stream_${new Date().toISOString()}.webm`;
+            a.click();
+
+            // Cleanup
+            window.URL.revokeObjectURL(url);
+            document.body.removeChild(a);
+            console.log("Video downloaded successfully.");
+        }
+
+
         // Keyboard shortcuts for recording
         window.addEventListener("keydown", (e) => {
-            console.log(e)
-            // Start recording: Shift + R
-            if (e.key.toLowerCase() === "r") {
-                console.log("start recording")
+            // Start recording: R (no modifier needed for simplicity)
+            if (e.key.toLowerCase() === "r" && !isRecording) {
                 startRecording();
             }
 
-            // Stop recording: Shift + S
-            if (e.key.toLowerCase() === "s") {
+            // Stop recording: S (no modifier needed for simplicity)
+            if (e.key.toLowerCase() === "s" && isRecording) {
                 stopRecording();
             }
         });
 
-
         startStream();
+
     </script>
 </body>
 
